@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,10 +37,20 @@ func run() error {
 	}
 	fmt.Println("medium gas is", gas)
 
-	if err := appendToFile(gas); err != nil {
+	gasPrices, err := appendToFile(gas)
+	if err != nil {
 		return err
 	}
 	fmt.Println("written gas price to file")
+
+	stats, err := getPriceStats(gasPrices)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("mean price = %v, stddev = %v\n", stats.mean, stats.stddev)
+
+	category := categorisePrice(gas, stats)
+	fmt.Println("the price now is", category)
 
 	return nil
 }
@@ -109,13 +120,13 @@ type gasPriceData struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-func appendToFile(newGasPrice int) error {
+func appendToFile(newGasPrice int) ([]gasPriceData, error) {
 	gasPrices, err := readGasPrices()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			gasPrices = nil
 		} else {
-			return errors.Wrap(err, "while reading gas prices")
+			return nil, errors.Wrap(err, "while reading gas prices")
 		}
 	}
 
@@ -124,7 +135,7 @@ func appendToFile(newGasPrice int) error {
 		gasPrices = gasPrices[len(gasPrices)-maxNumGasPrices:]
 	}
 
-	return writeGasPrices(gasPrices)
+	return gasPrices, writeGasPrices(gasPrices)
 }
 
 func readGasPrices() ([]gasPriceData, error) {
@@ -148,4 +159,84 @@ func writeGasPrices(gasPrices []gasPriceData) error {
 	}
 
 	return ioutil.WriteFile(pricesFilename, data, 0644)
+}
+
+type priceStats struct {
+	mean   float64
+	stddev float64
+}
+
+func getPriceStats(gasPrices []gasPriceData) (*priceStats, error) {
+	if len(gasPrices) == 0 {
+		return nil, errors.New("no gas prices")
+	}
+
+	mean := calculateMean(gasPrices)
+	stddev := calculateStdDev(gasPrices, mean)
+
+	return &priceStats{mean: mean, stddev: stddev}, nil
+}
+
+func calculateMean(gasPrices []gasPriceData) float64 {
+	var sum float64
+
+	for i := range gasPrices {
+		sum += float64(gasPrices[i].Price)
+	}
+
+	return sum / float64(len(gasPrices))
+}
+
+func calculateStdDev(gasPrices []gasPriceData, mean float64) float64 {
+	if len(gasPrices) == 1 {
+		return 0.0
+	}
+
+	var sumSquares float64
+
+	for i := range gasPrices {
+		diff := float64(gasPrices[i].Price) - mean
+		sumSquares += diff * diff
+	}
+
+	variance := sumSquares / float64(len(gasPrices)-1)
+	return math.Sqrt(variance)
+}
+
+type priceCategory int
+
+const (
+	High priceCategory = iota
+	Average
+	Low
+)
+
+func (p priceCategory) String() string {
+	switch p {
+	case High:
+		return "High"
+
+	case Average:
+		return "Average"
+
+	case Low:
+		return "Low"
+
+	default:
+		panic("unexpected price category")
+	}
+}
+
+func categorisePrice(price int, stats *priceStats) priceCategory {
+	fprice := float64(price)
+
+	if fprice < (stats.mean - stats.stddev) {
+		return Low
+	}
+
+	if fprice > (stats.mean + stats.stddev) {
+		return High
+	}
+
+	return Average
 }
