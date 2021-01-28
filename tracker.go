@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	baseURL        = "https://api.etherscan.io/api"
-	pricesFilename = "gas_prices.json"
+	baseURL         = "https://api.etherscan.io/api"
+	pricesFilename  = "gas_prices.json"
+	maxNumGasPrices = 7 * 24 // 7 days of data, assuming run once per hour.
 )
 
 func main() {
@@ -119,6 +120,10 @@ func appendToFile(newGasPrice int) error {
 	}
 
 	gasPrices = append(gasPrices, gasPriceData{Price: newGasPrice, Timestamp: time.Now()})
+	if len(gasPrices) > maxNumGasPrices {
+		gasPrices = gasPrices[len(gasPrices)-maxNumGasPrices:]
+	}
+
 	return writeGasPrices(gasPrices)
 }
 
