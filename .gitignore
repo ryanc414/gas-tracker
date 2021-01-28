@@ -1,2 +1,5 @@
 gas_prices.json
 .env
+tracker
+*.plist
+run.sh

@@ -44,7 +44,7 @@ func run() error {
 	if err != nil {
 		return errors.Wrap(err, "while getting current gas price")
 	}
-	log.Print("medium gas is", gas)
+	log.Print("medium gas is ", gas)
 
 	gasPrices, err := appendToFile(gas)
 	if err != nil {
@@ -59,7 +59,7 @@ func run() error {
 	log.Printf("mean price = %v, stddev = %v", stats.mean, stats.stddev)
 
 	category := categorisePrice(gas, stats)
-	log.Print("the price now is", category)
+	log.Print("the price now is ", category)
 
 	if category != gasPrices.LastCategory {
 		err := notifier.notifyCategoryChange(category, gasPrices.LastCategory, gas)
