@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -16,13 +19,13 @@ import (
 
 const (
 	baseURL         = "https://api.etherscan.io/api"
-	pricesFilename  = "gas_prices.json"
+	pricesFilename  = ".gas_prices.json"
 	maxNumGasPrices = 7 * 24 // 7 days of data, assuming run once per hour.
 )
 
 func main() {
 	if err := run(); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 }
 
@@ -31,26 +34,41 @@ func run() error {
 	if apiKey == "" {
 		return errors.New("ETHERSCAN_API_KEY is not set")
 	}
+
+	notifier, err := newEmailNotifier()
+	if err != nil {
+		return errors.Wrap(err, "while constructing email notifier")
+	}
+
 	gas, err := getMediumGas(apiKey)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "while getting current gas price")
 	}
-	fmt.Println("medium gas is", gas)
+	log.Print("medium gas is", gas)
 
 	gasPrices, err := appendToFile(gas)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "while writing gas price to file")
 	}
-	fmt.Println("written gas price to file")
+	log.Print("written gas price to file")
 
-	stats, err := getPriceStats(gasPrices)
+	stats, err := getPriceStats(gasPrices.Prices)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "while calcuating gas price stats")
 	}
-	fmt.Printf("mean price = %v, stddev = %v\n", stats.mean, stats.stddev)
+	log.Printf("mean price = %v, stddev = %v", stats.mean, stats.stddev)
 
 	category := categorisePrice(gas, stats)
-	fmt.Println("the price now is", category)
+	log.Print("the price now is", category)
+
+	if category != gasPrices.LastCategory {
+		err := notifier.notifyCategoryChange(category, gasPrices.LastCategory, gas)
+		if err != nil {
+			return errors.Wrap(err, "while notifying of price category change")
+		}
+
+		log.Print("sent email to notify of price category change")
+	}
 
 	return nil
 }
@@ -115,50 +133,65 @@ func getMediumGas(apiKey string) (int, error) {
 	return int(mediumGas), nil
 }
 
+type historicalGasPrices struct {
+	LastCategory priceCategory  `json:"price_category"`
+	Prices       []gasPriceData `json:"prices"`
+}
+
 type gasPriceData struct {
 	Price     int       `json:"price"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
-func appendToFile(newGasPrice int) ([]gasPriceData, error) {
-	gasPrices, err := readGasPrices()
+func appendToFile(newGasPrice int) (historicalGasPrices, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return historicalGasPrices{}, errors.Wrap(err, "while getting user home dir")
+	}
+	filename := filepath.Join(home, pricesFilename)
+
+	gasPrices, err := readGasPrices(filename)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			gasPrices = nil
+			gasPrices = historicalGasPrices{LastCategory: Average, Prices: nil}
 		} else {
-			return nil, errors.Wrap(err, "while reading gas prices")
+			return historicalGasPrices{}, errors.Wrap(err, "while reading gas prices")
 		}
 	}
 
-	gasPrices = append(gasPrices, gasPriceData{Price: newGasPrice, Timestamp: time.Now()})
-	if len(gasPrices) > maxNumGasPrices {
-		gasPrices = gasPrices[len(gasPrices)-maxNumGasPrices:]
+	gasPrices.Prices = append(gasPrices.Prices, gasPriceData{Price: newGasPrice, Timestamp: time.Now()})
+	if len(gasPrices.Prices) > maxNumGasPrices {
+		gasPrices.Prices = gasPrices.Prices[len(gasPrices.Prices)-maxNumGasPrices:]
 	}
 
-	return gasPrices, writeGasPrices(gasPrices)
-}
-
-func readGasPrices() ([]gasPriceData, error) {
-	data, err := ioutil.ReadFile(pricesFilename)
-	if err != nil {
-		return nil, err
-	}
-
-	var gasPrices []gasPriceData
-	if err := json.Unmarshal(data, &gasPrices); err != nil {
-		return nil, err
+	if err := writeGasPrices(filename, &gasPrices); err != nil {
+		return historicalGasPrices{}, errors.Wrap(err, "while writing updated gas prices")
 	}
 
 	return gasPrices, nil
 }
 
-func writeGasPrices(gasPrices []gasPriceData) error {
+func readGasPrices(filename string) (historicalGasPrices, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return historicalGasPrices{}, err
+	}
+
+	var history historicalGasPrices
+	if err := json.Unmarshal(data, &history); err != nil {
+		return historicalGasPrices{}, err
+	}
+
+	return history, nil
+}
+
+func writeGasPrices(filename string, gasPrices *historicalGasPrices) error {
 	data, err := json.Marshal(gasPrices)
 	if err != nil {
 		return err
 	}
 
-	return ioutil.WriteFile(pricesFilename, data, 0644)
+	return ioutil.WriteFile(filename, data, 0644)
 }
 
 type priceStats struct {
@@ -239,4 +272,59 @@ func categorisePrice(price int, stats *priceStats) priceCategory {
 	}
 
 	return Average
+}
+
+type emailNotifier struct {
+	fromAddr string
+	toAddr   string
+	password string
+	smtpHost string
+	smtpPort int
+}
+
+func newEmailNotifier() (emailNotifier, error) {
+	from := os.Getenv("GAS_NOTIFIER_FROM")
+	if from == "" {
+		return emailNotifier{}, errors.New("GAS_NOTIFIER_FROM not set")
+	}
+	to := os.Getenv("GAS_NOTIFIER_TO")
+	if to == "" {
+		return emailNotifier{}, errors.New("GAS_NOTIFIER_TO not set")
+	}
+	pass := os.Getenv("GAS_NOTIFIER_PASSWORD")
+	if pass == "" {
+		return emailNotifier{}, errors.New("GAS_NOTIFIER_PASSWORD not set")
+	}
+
+	return emailNotifier{
+		fromAddr: from,
+		toAddr:   to,
+		password: pass,
+		smtpHost: "smtp.gmail.com",
+		smtpPort: 587,
+	}, nil
+}
+
+func (n *emailNotifier) notifyCategoryChange(
+	newCategory, previousCategory priceCategory, currentPrice int,
+) error {
+	body := fmt.Sprintf(
+		"Ethereum gas prices are no longer %s, they are now %s\n\nSpecifically, medium gas is now %d\n",
+		previousCategory,
+		newCategory,
+		currentPrice,
+	)
+
+	msg := "From: " + n.fromAddr + "\n" +
+		"To: " + n.toAddr + "\n" +
+		fmt.Sprintf("Subject: Gas Prices are %s\n\n", newCategory) +
+		body
+
+	return smtp.SendMail(
+		fmt.Sprintf("%s:%d", n.smtpHost, n.smtpPort),
+		smtp.PlainAuth("", n.fromAddr, n.password, n.smtpHost),
+		n.fromAddr,
+		[]string{n.toAddr},
+		[]byte(msg),
+	)
 }
