@@ -8,22 +8,39 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/pkg/errors"
 )
 
-const baseURL = "https://api.etherscan.io/api"
+const (
+	baseURL        = "https://api.etherscan.io/api"
+	pricesFilename = "gas_prices.json"
+)
 
 func main() {
+	if err := run(); err != nil {
+		panic(err)
+	}
+}
+
+func run() error {
 	apiKey := os.Getenv("ETHERSCAN_API_KEY")
 	if apiKey == "" {
-		panic("ETHERSCAN_API_KEY is not set")
+		return errors.New("ETHERSCAN_API_KEY is not set")
 	}
 	gas, err := getMediumGas(apiKey)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	fmt.Println("medium gas is", gas)
+
+	if err := appendToFile(gas); err != nil {
+		return err
+	}
+	fmt.Println("written gas price to file")
+
+	return nil
 }
 
 type gasResponse struct {
@@ -84,4 +101,46 @@ func getMediumGas(apiKey string) (int, error) {
 	}
 
 	return int(mediumGas), nil
+}
+
+type gasPriceData struct {
+	Price     int       `json:"price"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func appendToFile(newGasPrice int) error {
+	gasPrices, err := readGasPrices()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			gasPrices = nil
+		} else {
+			return errors.Wrap(err, "while reading gas prices")
+		}
+	}
+
+	gasPrices = append(gasPrices, gasPriceData{Price: newGasPrice, Timestamp: time.Now()})
+	return writeGasPrices(gasPrices)
+}
+
+func readGasPrices() ([]gasPriceData, error) {
+	data, err := ioutil.ReadFile(pricesFilename)
+	if err != nil {
+		return nil, err
+	}
+
+	var gasPrices []gasPriceData
+	if err := json.Unmarshal(data, &gasPrices); err != nil {
+		return nil, err
+	}
+
+	return gasPrices, nil
+}
+
+func writeGasPrices(gasPrices []gasPriceData) error {
+	data, err := json.Marshal(gasPrices)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(pricesFilename, data, 0644)
 }
