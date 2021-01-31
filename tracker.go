@@ -46,9 +46,14 @@ func run() error {
 	}
 	log.Print("medium gas is ", gas)
 
-	gasPrices, err := appendToFile(gas)
+	filepath, err := getFilepath()
 	if err != nil {
-		return errors.Wrap(err, "while writing gas price to file")
+		return errors.Wrap(err, "while getting filepath")
+	}
+
+	gasPrices, err := readAndAppend(gas, filepath)
+	if err != nil {
+		return errors.Wrap(err, "while reading gas prices from file")
 	}
 	log.Print("written gas price to file")
 
@@ -61,7 +66,12 @@ func run() error {
 	category := categorisePrice(gas, stats)
 	log.Print("the price now is ", category)
 
-	if category != gasPrices.LastCategory {
+	gasPrices.LastCategory = category
+	if err := writeGasPrices(filepath, &gasPrices); err != nil {
+		return errors.Wrap(err, "while writing gas prices to file")
+	}
+
+	if category != Average && category != gasPrices.LastCategory {
 		err := notifier.notifyCategoryChange(category, gasPrices.LastCategory, gas)
 		if err != nil {
 			return errors.Wrap(err, "while notifying of price category change")
@@ -71,6 +81,16 @@ func run() error {
 	}
 
 	return nil
+}
+
+func getFilepath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(err, "while getting user home dir")
+	}
+	path := filepath.Join(home, pricesFilename)
+
+	return path, nil
 }
 
 type gasResponse struct {
@@ -143,13 +163,7 @@ type gasPriceData struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-func appendToFile(newGasPrice int) (historicalGasPrices, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return historicalGasPrices{}, errors.Wrap(err, "while getting user home dir")
-	}
-	filename := filepath.Join(home, pricesFilename)
-
+func readAndAppend(newGasPrice int, filename string) (historicalGasPrices, error) {
 	gasPrices, err := readGasPrices(filename)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -162,10 +176,6 @@ func appendToFile(newGasPrice int) (historicalGasPrices, error) {
 	gasPrices.Prices = append(gasPrices.Prices, gasPriceData{Price: newGasPrice, Timestamp: time.Now()})
 	if len(gasPrices.Prices) > maxNumGasPrices {
 		gasPrices.Prices = gasPrices.Prices[len(gasPrices.Prices)-maxNumGasPrices:]
-	}
-
-	if err := writeGasPrices(filename, &gasPrices); err != nil {
-		return historicalGasPrices{}, errors.Wrap(err, "while writing updated gas prices")
 	}
 
 	return gasPrices, nil
