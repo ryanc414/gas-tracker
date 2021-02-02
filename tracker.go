@@ -66,11 +66,6 @@ func run() error {
 	category := categorisePrice(gas, stats)
 	log.Print("the price now is ", category)
 
-	gasPrices.LastCategory = category
-	if err := writeGasPrices(filepath, &gasPrices); err != nil {
-		return errors.Wrap(err, "while writing gas prices to file")
-	}
-
 	if category != Average && category != gasPrices.LastCategory {
 		err := notifier.notifyCategoryChange(category, gasPrices.LastCategory, gas)
 		if err != nil {
@@ -78,6 +73,11 @@ func run() error {
 		}
 
 		log.Print("sent email to notify of price category change")
+	}
+
+	gasPrices.LastCategory = category
+	if err := writeGasPrices(filepath, &gasPrices); err != nil {
+		return errors.Wrap(err, "while writing gas prices to file")
 	}
 
 	return nil
