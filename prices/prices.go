@@ -1,6 +1,12 @@
 package prices
 
-import "time"
+import (
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+)
 
 type GasPriceData struct {
 	Price     int           `json:"price"`
@@ -29,6 +35,40 @@ func (p PriceCategory) String() string {
 
 	default:
 		panic("unexpected price category")
+	}
+}
+func (p PriceCategory) MarshalDynamoDBAttributeValue(av *dynamodb.AttributeValue) error {
+	av.S = aws.String(p.String())
+	return nil
+}
+
+func (p *PriceCategory) UnmarshalDynamoDBAttributeValue(av *dynamodb.AttributeValue) error {
+	if av.S == nil {
+		return nil
+	}
+
+	val, err := parsePriceCategory(av.S)
+	if err != nil {
+		return err
+	}
+
+	*p = val
+	return nil
+}
+
+func parsePriceCategory(input *string) (PriceCategory, error) {
+	switch *input {
+	case "High":
+		return High, nil
+
+	case "Average":
+		return Average, nil
+
+	case "Low":
+		return Low, nil
+
+	default:
+		return Average, errors.New("unexpected price category")
 	}
 }
 
