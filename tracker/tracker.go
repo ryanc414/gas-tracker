@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -298,7 +299,7 @@ func calculateStdDev(gasPrices []prices.GasPriceData, mean float64) float64 {
 
 type emailNotifier struct {
 	fromAddr string
-	toAddr   string
+	toAddrs  []string
 	password string
 	smtpHost string
 	smtpPort int
@@ -320,7 +321,7 @@ func newEmailNotifier() (emailNotifier, error) {
 
 	return emailNotifier{
 		fromAddr: from,
-		toAddr:   to,
+		toAddrs:  strings.Split(to, ","),
 		password: pass,
 		smtpHost: "smtp.gmail.com",
 		smtpPort: 587,
@@ -338,7 +339,7 @@ func (n *emailNotifier) notifyCategoryChange(
 	)
 
 	msg := "From: " + n.fromAddr + "\n" +
-		"To: " + n.toAddr + "\n" +
+		"To: " + strings.Join(n.toAddrs, ",") + "\n" +
 		fmt.Sprintf("Subject: Gas Prices are %s\n\n", newCategory) +
 		body
 
@@ -346,7 +347,7 @@ func (n *emailNotifier) notifyCategoryChange(
 		fmt.Sprintf("%s:%d", n.smtpHost, n.smtpPort),
 		smtp.PlainAuth("", n.fromAddr, n.password, n.smtpHost),
 		n.fromAddr,
-		[]string{n.toAddr},
+		n.toAddrs,
 		[]byte(msg),
 	)
 }
