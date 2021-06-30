@@ -36,6 +36,7 @@ func main() {
 
 func HandleRequest(ctx context.Context, _ struct{}) (string, error) {
 	if err := run(ctx); err != nil {
+		log.Print("error: ", err)
 		return "error", err
 	}
 
